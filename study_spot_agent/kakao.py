@@ -10,6 +10,10 @@ import httpx
 ADDRESS_URL = "https://dapi.kakao.com/v2/local/search/address.json"
 KEYWORD_URL = "https://dapi.kakao.com/v2/local/search/keyword.json"
 
+# Keyword search with `rect`: lower-left lng,lat then upper-right lng,lat (WGS84).
+# Covers mainland Korea when a global keyword query returns nothing.
+_KOREA_RECT = "124.5,33.0,132.0,38.8"
+
 
 def _headers() -> dict[str, str]:
     key = os.getenv("KAKAO_REST_API_KEY", "").strip()
@@ -18,37 +22,61 @@ def _headers() -> dict[str, str]:
     return {"Authorization": f"KakaoAK {key}"}
 
 
+def _keyword_geocode_attempt(
+    client: httpx.Client,
+    query: str,
+    extra_params: dict[str, Any],
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """
+    Returns (documents, error_message). documents is None if HTTP not usable.
+    """
+    params: dict[str, Any] = {"query": query, "size": 5, "sort": "accuracy", **extra_params}
+    r = client.get(KEYWORD_URL, headers=_headers(), params=params)
+    if r.status_code == 401:
+        return None, "카카오 API 키가 거부되었습니다."
+    if r.status_code != 200:
+        return None, f"키워드 API HTTP {r.status_code}: {r.text[:200]}"
+    data = r.json()
+    return data.get("documents") or [], None
+
+
 def geocode_by_keyword_place(query: str, timeout: float = 10.0) -> dict[str, Any]:
     """
-    건물·캠퍼스·역 등 **장소 키워드** → 좌표 (키워드 검색 API, 중심 좌표 불필요).
-    예: 부산대, 서울역, 장전역 — 주소 검색(address.json)이 비어 있을 때 사용.
+    건물·캠퍼스·역 등 **장소 키워드** → 좌표 (키워드 검색 API).
+    예: 부산대, 서울역 — 주소 검색(address.json)이 비어 있을 때 사용.
+    순서: (1) 정확도 정렬 (2) 한국 영역 rect로 재시도.
     """
     q = query.strip()
     if not q:
         return {"ok": False, "error": "검색어가 비어 있습니다."}
+
+    attempts: list[dict[str, Any]] = [
+        {},
+        {"rect": _KOREA_RECT},
+    ]
+
     try:
         with httpx.Client(timeout=timeout) as client:
-            r = client.get(
-                KEYWORD_URL,
-                headers=_headers(),
-                params={
-                    "query": q,
-                    "size": 5,
-                    "sort": "accuracy",
-                },
-            )
+            docs: list[dict[str, Any]] | None = None
+            last_err: str | None = None
+            for extra in attempts:
+                dlist, err = _keyword_geocode_attempt(client, q, extra)
+                if err:
+                    last_err = err
+                    if "401" in err or "거부" in err:
+                        return {"ok": False, "error": err}
+                    continue
+                if dlist:
+                    docs = dlist
+                    break
+            if not docs:
+                return {
+                    "ok": False,
+                    "error": last_err or "키워드 검색 결과가 없습니다.",
+                }
+
     except Exception as e:
         return {"ok": False, "error": f"네트워크 오류: {e}"}
-
-    if r.status_code == 401:
-        return {"ok": False, "error": "카카오 API 키가 거부되었습니다."}
-    if r.status_code != 200:
-        return {"ok": False, "error": f"키워드 API HTTP {r.status_code}: {r.text[:200]}"}
-
-    data = r.json()
-    docs = data.get("documents") or []
-    if not docs:
-        return {"ok": False, "error": "키워드 검색 결과가 없습니다."}
 
     d0 = docs[0]
     try:
