@@ -482,7 +482,7 @@ def main() -> None:
 
     location = st.text_input(
         "주소 / 지명",
-        placeholder="예: 부산 금정구 장전동, 서울 성북구 …",
+        placeholder="주소·동 이름 또는 장소명 (예: 부산 금정구 장전동, 부산대, 서울역 …)",
     )
 
     run = st.button("추천 실행", type="primary")
