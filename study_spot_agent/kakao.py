@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 import httpx
@@ -20,6 +21,29 @@ def _headers() -> dict[str, str]:
     if not key:
         raise RuntimeError("KAKAO_REST_API_KEY가 설정되지 않았습니다.")
     return {"Authorization": f"KakaoAK {key}"}
+
+
+def _prefer_keyword_geocode_first(q: str) -> bool:
+    """
+    주소 API가 '부산대' 같은 장소명을 엉뚱한 도로명/지번에 매칭하는 경우가 있어,
+    행정구역/도로 패턴이 없으면 키워드(POI) 지오코딩을 먼저 시도한다.
+    """
+    q = q.strip()
+    if not q or re.search(r"\d", q):
+        return False
+    parts = [p for p in re.split(r"[\s,]+", q) if p]
+    for p in parts:
+        if len(p) < 2:
+            continue
+        if p.endswith(("동", "가", "리", "읍", "면")):
+            return False
+        if len(p) >= 3 and p.endswith("구"):
+            return False
+        if p.endswith(("로", "길")):
+            return False
+    if len(parts) >= 3:
+        return False
+    return True
 
 
 def _keyword_geocode_attempt(
@@ -109,12 +133,19 @@ def geocode_by_keyword_place(query: str, timeout: float = 10.0) -> dict[str, Any
 def geocode_address(query: str, timeout: float = 10.0) -> dict[str, Any]:
     """
     주소 또는 장소명 → 좌표.
-    1) 주소 검색 API (도로명·지번에 강함)
-    2) 결과가 없으면 키워드 장소 검색 (부산대, ○○역 등)
+    - 행정동/도로형 입력: 주소 API 우선 → 비면 키워드.
+    - 짧은 장소명(부산대, ○○역 등): 키워드 우선 → 비면 주소 API.
     """
     q = query.strip()
     if not q:
         return {"ok": False, "error": "주소·지명이 비어 있습니다."}
+
+    keyword_first = _prefer_keyword_geocode_first(q)
+    if keyword_first:
+        kw = geocode_by_keyword_place(q, timeout=timeout)
+        if kw.get("ok"):
+            return kw
+
     try:
         with httpx.Client(timeout=timeout) as client:
             r = client.get(
@@ -150,10 +181,10 @@ def geocode_address(query: str, timeout: float = 10.0) -> dict[str, Any]:
             "geocode_source": "address",
         }
 
-    # No jibun/road hit — try POI / campus / station names
-    kw = geocode_by_keyword_place(q, timeout=timeout)
-    if kw.get("ok"):
-        return kw
+    if not keyword_first:
+        kw = geocode_by_keyword_place(q, timeout=timeout)
+        if kw.get("ok"):
+            return kw
 
     return {
         "ok": False,
