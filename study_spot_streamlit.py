@@ -22,9 +22,6 @@ if str(_ROOT) not in sys.path:
 
 load_dotenv(_ROOT / ".env")
 
-import folium
-from streamlit_folium import st_folium
-
 from study_spot_agent.feedback_store import append_feedback, feedback_path  # noqa: E402
 from study_spot_agent.graph import build_graph, new_run_id  # noqa: E402
 
@@ -257,80 +254,6 @@ def _split_ranked(ranked: list[dict]) -> tuple[list[dict], list[dict]]:
     return cafes, others
 
 
-def _parse_lat_lng(p: dict) -> tuple[float, float] | None:
-    """Kakao keyword results use x=lng, y=lat (WGS84)."""
-    try:
-        lat = float(p.get("y"))
-        lng = float(p.get("x"))
-        if -90 <= lat <= 90 and -180 <= lng <= 180:
-            return lat, lng
-    except (TypeError, ValueError):
-        pass
-    return None
-
-
-def _filter_by_category_choice(ranked: list[dict], choice: str) -> list[dict]:
-    if choice == "카페만":
-        return [p for p in ranked if _is_cafe(p)]
-    if choice == "도서관·기타만":
-        return [p for p in ranked if not _is_cafe(p)]
-    return list(ranked)
-
-
-def _render_folium_map(
-    places: list[dict],
-    center_lat: float,
-    center_lng: float,
-) -> None:
-    """Static map: center pin + cafe (orange) vs library/other (green). Uses OpenStreetMap tiles."""
-    if not places:
-        st.caption("지도에 표시할 좌표가 있는 추천이 없습니다.")
-        return
-    m = folium.Map(location=[center_lat, center_lng], zoom_start=15, tiles="OpenStreetMap")
-    folium.Marker(
-        [center_lat, center_lng],
-        popup=folium.Popup("검색 기준 위치", max_width=220),
-        tooltip="기준점",
-        icon=folium.Icon(color="blue", icon="info-sign"),
-    ).add_to(m)
-
-    bounds: list[list[float]] = [[center_lat, center_lng]]
-    for p in places[:40]:
-        coords = _parse_lat_lng(p)
-        if not coords:
-            continue
-        lat, lng = coords
-        bounds.append([lat, lng])
-        cafe = _is_cafe(p)
-        color = "#ea580c" if cafe else "#0d9488"
-        name = str(p.get("place_name") or "?")
-        score = p.get("score", "")
-        dist = p.get("distance", "")
-        url = str(p.get("place_url") or "").strip()
-        link_html = f'<a href="{html.escape(url)}" target="_blank" rel="noopener">Kakao Map</a>' if url else ""
-        popup_html = (
-            f"<strong>{html.escape(name)}</strong><br/>"
-            f"점수: {html.escape(str(score))} · 약 {html.escape(str(dist))}m<br/>"
-            f"{link_html}"
-        )
-        folium.CircleMarker(
-            location=[lat, lng],
-            radius=10,
-            color=color,
-            fill=True,
-            fill_color=color,
-            fill_opacity=0.75,
-            weight=2,
-            popup=folium.Popup(popup_html, max_width=280),
-            tooltip=f"{name[:28]}…" if len(name) > 28 else name,
-        ).add_to(m)
-
-    if len(bounds) > 1:
-        m.fit_bounds(bounds, padding=(24, 24), max_zoom=16)
-
-    st_folium(m, use_container_width=True, height=420, returned_objects=[])
-
-
 def _render_place_card(p: dict) -> None:
     name = html.escape(str(p.get("place_name") or "(이름 없음)"))
     score = html.escape(str(p.get("score")))
@@ -381,36 +304,11 @@ def _render_result_cards(state: dict) -> None:
     )
     st.markdown(
         f"<p class='result-sub'>기준 위치: <strong>{loc_e}</strong> (주소 API) · "
-        f"점수 순 · 아래에서 <strong>표시 필터</strong>와 <strong>지도</strong>를 조정할 수 있습니다.</p>",
+        f"점수 순 · <strong>카페</strong>와 <strong>도서관·기타</strong>로 구분했습니다.</p>",
         unsafe_allow_html=True,
     )
 
-    cafes_all, others_all = _split_ranked(ranked)
-    m1, m2, m3 = st.columns(3)
-    with m1:
-        st.metric("전체 추천", len(ranked))
-    with m2:
-        st.metric("카페", len(cafes_all))
-    with m3:
-        st.metric("도서관·기타", len(others_all))
-
-    cat_choice = st.radio(
-        "표시 카테고리",
-        ["전체", "카페만", "도서관·기타만"],
-        horizontal=True,
-        help="목록·지도 모두 이 필터가 적용됩니다.",
-    )
-    filtered = _filter_by_category_choice(ranked, cat_choice)
-    st.caption(f"지금 표시: **{len(filtered)}**곳 (카드·지도 동일)")
-
-    cen_lat, cen_lng = state.get("lat"), state.get("lng")
-    if cen_lat is not None and cen_lng is not None and filtered:
-        st.subheader("지도")
-        st.caption("파란 핀: 검색 기준 · 주황: 카페 · 청록: 도서관·기타")
-        _render_folium_map(filtered, float(cen_lat), float(cen_lng))
-        st.divider()
-
-    cafes, others = _split_ranked(filtered)
+    cafes, others = _split_ranked(ranked)
 
     col_cafe, col_other = st.columns(2, gap="large")
     with col_cafe:
@@ -482,6 +380,7 @@ def main() -> None:
 
     location = st.text_input(
         "주소 / 지명",
+        value="부산 금정구 장전동",
         placeholder="주소·동 이름 또는 장소명 (예: 부산 금정구 장전동, 부산대, 서울역 …)",
     )
 
@@ -509,8 +408,7 @@ def main() -> None:
             "logs": [],
         }
         try:
-            with st.spinner("LangGraph 실행 중… (지오코딩 → 검색 → 점수 → enrich 분기)"):
-                out = graph.invoke(init)
+            out = graph.invoke(init)
         except Exception as e:
             st.exception(e)
             return
@@ -552,7 +450,6 @@ def main() -> None:
                 vote="up",
                 extra={"score": r.get("score"), "enrich_used": state.get("enrich_used")},
             )
-            st.toast("피드백을 저장했습니다.", icon="👍")
             st.success("저장했습니다.")
     with fc2:
         if st.button("👎 별로"):
@@ -566,7 +463,6 @@ def main() -> None:
                 vote="down",
                 extra={"score": r.get("score"), "enrich_used": state.get("enrich_used")},
             )
-            st.toast("피드백을 저장했습니다.", icon="👎")
             st.success("저장했습니다.")
 
 
