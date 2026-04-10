@@ -1,0 +1,8 @@
+# 공부 장소 추천 앱 (study_spot_streamlit.py)
+# pip install -r requirements-study-spot.txt
+streamlit>=1.28
+python-dotenv>=1.0
+httpx>=0.27
+langgraph>=0.2
+langchain-core>=0.3
+langchain-openai>=0.2
